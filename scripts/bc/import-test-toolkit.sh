@@ -201,11 +201,8 @@ echo ""
 
 # Execute the PowerShell script through Wine
 # Note: We explicitly output to console and tee to log file
-if wine powershell -ExecutionPolicy Bypass -File "Z:$(echo $TEMP_PS1 | sed 's|/|\\|g')" 2>&1 | tee /tmp/import-test-toolkit.log; then
-    POWERSHELL_EXIT_CODE=${PIPESTATUS[0]}
-else
-    POWERSHELL_EXIT_CODE=${PIPESTATUS[0]}
-fi
+wine powershell -ExecutionPolicy Bypass -File "Z:$(echo $TEMP_PS1 | sed 's|/|\\|g')" 2>&1 | tee /tmp/import-test-toolkit.log
+POWERSHELL_EXIT_CODE=${PIPESTATUS[0]}
 
 echo ""
 if [ $POWERSHELL_EXIT_CODE -eq 0 ]; then
