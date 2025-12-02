@@ -38,8 +38,12 @@ export WINEARCH=win64
 export DISPLAY=":0"
 export WINE_SKIP_GECKO_INSTALLATION=1
 export WINE_SKIP_MONO_INSTALLATION=1
-#export WINEDEBUG="-all"
-export WINEDEBUG="+http,+winhttp,+httpapi,+advapi,-thread,-combase,-ntdll"  # debugging
+# Wine debug settings - respect VERBOSE_LOGGING
+if [ "$VERBOSE_LOGGING" = "true" ] || [ "$VERBOSE_LOGGING" = "1" ]; then
+    export WINEDEBUG="${WINEDEBUG:-+http,+winhttp,+httpapi,+advapi,-thread,-combase,-ntdll}"
+else
+    export WINEDEBUG="${WINEDEBUG:--all}"
+fi
 
 # Standard locale settings (no special workarounds needed with custom Wine)
 export LANG=en_US.UTF-8
