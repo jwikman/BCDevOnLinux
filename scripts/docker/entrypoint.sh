@@ -111,5 +111,47 @@ else
     echo "Starting BC Server..."
     # Note: The custom Wine build includes locale fixes, eliminating the need for
     # the previous workaround scripts (now archived in legacy/culture-workarounds/)
-    exec /home/scripts/docker/start-bcserver.sh
+
+    # Start BC Server in background to allow post-startup tasks
+    /home/scripts/docker/start-bcserver.sh &
+    BC_SERVER_PID=$!
+
+    # Wait for BC Server to be fully ready (check for the readiness message in logs)
+    echo "Waiting for BC Server to be ready..."
+    timeout=300
+    elapsed=0
+    while [ $elapsed -lt $timeout ]; do
+        if [ -f /var/log/bc-server.log ] && grep -q "Press Enter to stop the console server" /var/log/bc-server.log; then
+            echo "✓ BC Server is ready"
+            break
+        fi
+        sleep 2
+        elapsed=$((elapsed + 2))
+    done
+
+    if [ $elapsed -ge $timeout ]; then
+        echo "⚠ Timeout waiting for BC Server readiness"
+    fi
+
+    # Import test toolkit if requested (after BC Server is ready)
+    if [ "$IMPORT_TEST_TOOLKIT" = "true" ] || [ "$IMPORT_TEST_TOOLKIT" = "1" ]; then
+        echo ""
+        echo "IMPORT_TEST_TOOLKIT is enabled, importing test framework apps..."
+        if [ -f "/home/scripts/bc/import-test-toolkit.sh" ]; then
+            bash /home/scripts/bc/import-test-toolkit.sh
+            if [ $? -eq 0 ]; then
+                echo "✓ Test toolkit imported successfully"
+            else
+                echo "⚠ Test toolkit import failed, but BC Server will continue running"
+            fi
+        else
+            echo "⚠ import-test-toolkit.sh script not found, skipping test toolkit import"
+        fi
+    else
+        echo ""
+        echo "Test toolkit import skipped (IMPORT_TEST_TOOLKIT not enabled)"
+    fi
+
+    # Wait for BC Server process to complete
+    wait $BC_SERVER_PID
 fi
