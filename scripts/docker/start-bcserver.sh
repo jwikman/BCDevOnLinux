@@ -210,3 +210,19 @@ fi
 # Wait for the background process
 wait $BC_PID
 
+# Import test toolkit if requested
+if [ "$IMPORT_TEST_TOOLKIT" = "true" ] || [ "$IMPORT_TEST_TOOLKIT" = "1" ]; then
+    echo ""
+    echo "IMPORT_TEST_TOOLKIT is enabled, importing test framework apps..."
+    if [ -f "/home/scripts/bc/import-test-toolkit.sh" ]; then
+        bash /home/scripts/bc/import-test-toolkit.sh
+        if [ $? -eq 0 ]; then
+            echo "✓ Test toolkit imported successfully"
+        else
+            echo "⚠ Test toolkit import failed, but BC Server will continue running"
+        fi
+    else
+        echo "⚠ import-test-toolkit.sh script not found, skipping test toolkit import"
+    fi
+fi
+
