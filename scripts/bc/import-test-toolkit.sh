@@ -53,11 +53,16 @@ fi
 
 echo ""
 
-# Get company name (needed for query parameters)
+# Get company name (needed for query parameters) - retry until successful
 echo "Getting company information..."
-COMPANY_RESPONSE=$(curl -s -m 10 -u "${BC_USERNAME}:${BC_PASSWORD}" "http://localhost:7048/BC/api/v2.0/companies" 2>&1)
+COMPANY_NAME=""
+COMPANY_RETRY=0
+MAX_COMPANY_RETRIES=60
 
-COMPANY_NAME=$(echo "$COMPANY_RESPONSE" | python3 -c "
+while [ $COMPANY_RETRY -lt $MAX_COMPANY_RETRIES ] && [ -z "$COMPANY_NAME" ]; do
+    COMPANY_RESPONSE=$(curl -s -m 10 -u "${BC_USERNAME}:${BC_PASSWORD}" "http://localhost:7048/BC/api/v2.0/companies" 2>&1)
+
+    COMPANY_NAME=$(echo "$COMPANY_RESPONSE" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -69,12 +74,20 @@ except:
     sys.exit(1)
 " 2>/dev/null)
 
+    if [ -z "$COMPANY_NAME" ]; then
+        echo "  Retry $COMPANY_RETRY/$MAX_COMPANY_RETRIES - waiting for company data..."
+        sleep 3
+        COMPANY_RETRY=$((COMPANY_RETRY + 1))
+    fi
+done
+
 if [ -z "$COMPANY_NAME" ]; then
-    echo "⚠️  WARNING: Could not get company name from BC API"
-    echo "API Response (first 500 chars):"
+    echo "⚠️  WARNING: Could not get company name from BC API after $MAX_COMPANY_RETRIES attempts"
+    echo "Last API Response (first 500 chars):"
     echo "$COMPANY_RESPONSE" | head -c 500
     echo ""
     echo ""
+    echo "The BC server may need more time to fully initialize."
     echo "Skipping test toolkit installation. BC Server will continue running."
     exit 0
 fi
