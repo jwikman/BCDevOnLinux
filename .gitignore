@@ -1,2 +1,3 @@
 /msi
-/backup/.env
+/backup
+/.env
