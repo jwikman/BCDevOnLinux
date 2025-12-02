@@ -19,7 +19,12 @@ echo "Using BC server: $BC_BASE_URL"
 echo "Tenant: $BC_TENANT"
 echo ""
 
+# NOTE: Credentials are passed via curl -u flag. This is acceptable for local
+# container environments but would expose credentials in process lists in production.
+# For production, consider using .netrc or other secure credential storage.
+
 # Function to get published apps using OData API
+# Requires Python 3.6+ for f-string support
 get_published_test_apps() {
     local api_url="${BC_BASE_URL}/api/microsoft/automation/v2.0/companies(00000000-0000-0000-0000-000000000000)/extensions?\$filter=publisher eq 'Microsoft' and (contains(displayName,'Test') or contains(displayName,'Performance Toolkit'))"
     
@@ -84,9 +89,9 @@ if [ -z "$published_apps" ]; then
 fi
 
 echo "Found published test toolkit apps:"
-echo "$published_apps" | while IFS='|' read -r name version; do
+while IFS='|' read -r name version; do
     echo "  - $name ($version)"
-done
+done < <(echo "$published_apps")
 echo ""
 
 # Define installation order based on dependencies
@@ -119,7 +124,7 @@ for pattern in "${installation_order[@]}"; do
         continue
     fi
     
-    echo "$matching_apps" | while IFS='|' read -r name version; do
+    while IFS='|' read -r name version; do
         # Skip SINGLESERVER tests
         if echo "$name" | grep -qi "SINGLESERVER"; then
             echo "  Skipping: $name (SINGLESERVER test)"
@@ -134,7 +139,7 @@ for pattern in "${installation_order[@]}"; do
         else
             failed_count=$((failed_count + 1))
         fi
-    done
+    done < <(echo "$matching_apps")
 done
 
 echo ""
