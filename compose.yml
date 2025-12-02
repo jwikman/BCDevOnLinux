@@ -30,14 +30,18 @@ services:
       - "7086:7086"
     volumes:
       - bc_artifacts:/home/bcartifacts
-      # Optional: Mount pre-downloaded artifacts from host (overrides BC_VERSION settings)
-      # - ~/.bcartifacts.cache/sandbox/26.5.38752.40416:/home/bchost-cache:ro
+      # Optional: Mount pre-downloaded artifacts from host (overrides BC_ARTIFACT_URL settings)
+      # Example for BC 26: - ~/.bcartifacts.cache/sandbox/26.5.38752.40416:/home/bchost-cache:ro
+      # Example for BC 25: - ~/.bcartifacts.cache/sandbox/25.0.20348.23013:/home/bchost-cache:ro
       - ./secret.key:/home/secret.key:ro  # Mount RSA key directly
     tmpfs:
       # Wine Temp directory - used during BC startup for temporary operations
       - /root/.local/share/wineprefixes/bc1/drive_c/users/root/AppData/Local/Temp:size=512M,mode=1777,exec
       # BC metadata cache in RAM - critical for fast cache generation (metadata + assemblies)
-      - /root/.local/share/wineprefixes/bc1/drive_c/ProgramData/Microsoft/Microsoft Dynamics NAV/260/Server/MicrosoftDynamicsNavServer$$BC:size=1G,mode=1777,exec
+      # Mounting parent directory to support any BC version
+      # Note: This includes the entire NAV directory tree (all versions + Keys subdirs)
+      # Keys are repopulated on each container start from /home/config/secret.key
+      - /root/.local/share/wineprefixes/bc1/drive_c/ProgramData/Microsoft/Microsoft Dynamics NAV:size=1G,mode=1777,exec
     networks:
       - bc-network
     restart: unless-stopped
