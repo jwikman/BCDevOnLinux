@@ -207,10 +207,7 @@ if [ $elapsed -ge $timeout ]; then
     echo "Check /var/log/bc-server.log for details"
 fi
 
-# Wait for the background process
-wait $BC_PID
-
-# Import test toolkit if requested
+# Import test toolkit if requested (must happen before wait to avoid blocking)
 if [ "$IMPORT_TEST_TOOLKIT" = "true" ] || [ "$IMPORT_TEST_TOOLKIT" = "1" ]; then
     echo ""
     echo "IMPORT_TEST_TOOLKIT is enabled, importing test framework apps..."
@@ -228,4 +225,7 @@ else
     echo ""
     echo "Test toolkit import skipped (IMPORT_TEST_TOOLKIT not enabled)"
 fi
+
+# Wait for the background process
+wait $BC_PID
 
