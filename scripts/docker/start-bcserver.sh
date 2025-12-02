@@ -224,5 +224,8 @@ if [ "$IMPORT_TEST_TOOLKIT" = "true" ] || [ "$IMPORT_TEST_TOOLKIT" = "1" ]; then
     else
         echo "⚠ import-test-toolkit.sh script not found, skipping test toolkit import"
     fi
+else
+    echo ""
+    echo "Test toolkit import skipped (IMPORT_TEST_TOOLKIT not enabled)"
 fi
 
