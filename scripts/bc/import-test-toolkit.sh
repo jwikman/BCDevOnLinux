@@ -12,11 +12,24 @@ export WINEPREFIX="$HOME/.local/share/wineprefixes/bc1"
 BC_VERSION=$(/home/scripts/bc/detect-bc-version.sh 2>/dev/null || echo "260")
 echo "Detected BC version: $BC_VERSION"
 
+# Determine the path to the BC Management DLL in Wine prefix
+BC_DLL_PATH="$WINEPREFIX/drive_c/Program Files/Microsoft Dynamics NAV/$BC_VERSION/Service/Microsoft.Dynamics.Nav.Management.dll"
+
+if [ ! -f "$BC_DLL_PATH" ]; then
+    echo "ERROR: BC Management DLL not found at: $BC_DLL_PATH"
+    echo "BC Server must be installed before importing test toolkit"
+    exit 1
+fi
+
+echo "Using BC Management DLL: $BC_DLL_PATH"
+
 # Create temporary PowerShell script to sync and install test toolkit apps
+# This will run using pwsh (PowerShell Core on Linux), not Wine PowerShell
 TEMP_PS1="/tmp/import-test-toolkit-$$.ps1"
 cat > "$TEMP_PS1" << 'PSEOF'
-# Import BC Management module
-Import-Module 'C:\Program Files\Microsoft Dynamics NAV\{BC_VERSION}\Service\Microsoft.Dynamics.Nav.Management.dll' -ErrorAction Stop
+# Import BC Management module from Wine prefix
+$dllPath = "{BC_DLL_PATH}"
+Import-Module $dllPath -ErrorAction Stop
 
 $serverInstance = 'BC'
 $tenant = 'default'
@@ -193,15 +206,15 @@ Write-Host ""
 PSEOF
 
 # Replace placeholders in the PowerShell script
-sed -i "s|{BC_VERSION}|$BC_VERSION|g" "$TEMP_PS1"
+sed -i "s|{BC_DLL_PATH}|$BC_DLL_PATH|g" "$TEMP_PS1"
 
 echo "Executing PowerShell script to import test toolkit apps..."
 echo "This may take several minutes depending on the number of apps..."
 echo ""
 
-# Execute the PowerShell script through Wine
-# Note: We explicitly output to console and tee to log file
-wine powershell -ExecutionPolicy Bypass -File "Z:$(echo $TEMP_PS1 | sed 's|/|\\|g')" 2>&1 | tee /tmp/import-test-toolkit.log
+# Execute the PowerShell script using PowerShell Core (pwsh) on Linux
+# NOT using Wine PowerShell which is just a stub
+if pwsh -ExecutionPolicy Bypass -File "$TEMP_PS1" 2>&1 | tee /tmp/import-test-toolkit.log; then
 POWERSHELL_EXIT_CODE=${PIPESTATUS[0]}
 
 echo ""
