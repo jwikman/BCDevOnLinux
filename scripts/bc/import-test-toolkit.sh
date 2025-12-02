@@ -53,36 +53,36 @@ fi
 
 echo ""
 
-# Get company name (needed for query parameters) - retry until successful
+# Get company ID (needed for API calls) - retry until successful
 echo "Getting company information..."
-COMPANY_NAME=""
+COMPANY_ID=""
 COMPANY_RETRY=0
 MAX_COMPANY_RETRIES=60
 
-while [ $COMPANY_RETRY -lt $MAX_COMPANY_RETRIES ] && [ -z "$COMPANY_NAME" ]; do
+while [ $COMPANY_RETRY -lt $MAX_COMPANY_RETRIES ] && [ -z "$COMPANY_ID" ]; do
     COMPANY_RESPONSE=$(curl -s -m 10 -u "${BC_USERNAME}:${BC_PASSWORD}" "http://localhost:7048/BC/api/v2.0/companies" 2>&1)
 
-    COMPANY_NAME=$(echo "$COMPANY_RESPONSE" | python3 -c "
+    COMPANY_ID=$(echo "$COMPANY_RESPONSE" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
     if 'value' in data and len(data['value']) > 0:
-        print(data['value'][0]['name'])
+        print(data['value'][0]['id'])
     else:
         sys.exit(1)
 except:
     sys.exit(1)
 " 2>/dev/null)
 
-    if [ -z "$COMPANY_NAME" ]; then
+    if [ -z "$COMPANY_ID" ]; then
         echo "  Retry $COMPANY_RETRY/$MAX_COMPANY_RETRIES - waiting for company data..."
         sleep 3
         COMPANY_RETRY=$((COMPANY_RETRY + 1))
     fi
 done
 
-if [ -z "$COMPANY_NAME" ]; then
-    echo "⚠️  WARNING: Could not get company name from BC API after $MAX_COMPANY_RETRIES attempts"
+if [ -z "$COMPANY_ID" ]; then
+    echo "⚠️  WARNING: Could not get company ID from BC API after $MAX_COMPANY_RETRIES attempts"
     echo "Last API Response (first 500 chars):"
     echo "$COMPANY_RESPONSE" | head -c 500
     echo ""
@@ -92,9 +92,7 @@ if [ -z "$COMPANY_NAME" ]; then
     exit 0
 fi
 
-echo "✓ Found company: $COMPANY_NAME"
-# URL-encode the company name for use in query parameters
-COMPANY_NAME_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$COMPANY_NAME'))")
+echo "✓ Found company ID: $COMPANY_ID"
 echo ""
 
 # Define test toolkit apps in dependency order
@@ -112,6 +110,7 @@ declare -a TEST_APPS=(
 )
 
 # Function to publish app using Automation API
+# Using the approach from Waldo's script: PATCH directly to extensionUpload(0)/content
 publish_app() {
     local app_file="$1"
     local app_name=$(basename "$app_file" .app)
@@ -123,60 +122,27 @@ publish_app() {
         return 1
     fi
     
-    # Step 1: Create extensionUpload entity
-    local create_response=$(curl -s -m 30 -w "\n%{http_code}" -u "${BC_USERNAME}:${BC_PASSWORD}" \
-        -X POST \
-        -H "Content-Type: application/json" \
-        -d '{"schedule":"Current Version"}' \
-        "http://localhost:7048/BC/api/microsoft/automation/v2.0/extensionUpload?company=${COMPANY_NAME_ENCODED}" 2>&1)
+    # Use PATCH method to upload directly to extensionUpload(0)/content
+    # This matches Waldo's approach but with v2.0 API
+    local api_url="http://localhost:7048/BC/api/microsoft/automation/v2.0/companies(${COMPANY_ID})/extensionUpload(0)/content"
     
-    local create_http_code=$(echo "$create_response" | tail -n 1)
-    local create_body=$(echo "$create_response" | sed '$d')
-    
-    if [ "$create_http_code" != "201" ]; then
-        echo "  ✗ Failed to create upload entity (HTTP $create_http_code)"
-        if [ -n "$create_body" ]; then
-            echo "  Response: $create_body" | head -c 200
-            echo ""
-        fi
-        return 1
-    fi
-    
-    # Extract systemId and mediaEditLink from response
-    local system_id=$(echo "$create_body" | python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    print(data.get('systemId', ''))
-except:
-    sys.exit(1)
-" 2>/dev/null)
-    
-    if [ -z "$system_id" ]; then
-        echo "  ✗ Failed to extract systemId from response"
-        return 1
-    fi
-    
-    # Step 2: Upload the binary content
-    local upload_url="http://localhost:7048/BC/api/microsoft/automation/v2.0/extensionUpload(${system_id})/extensionContent?company=${COMPANY_NAME_ENCODED}"
-    
-    local upload_response=$(curl -s -m 120 -w "\n%{http_code}" -u "${BC_USERNAME}:${BC_PASSWORD}" \
-        -X PUT \
+    local response=$(curl -s -m 120 -w "\n%{http_code}" -u "${BC_USERNAME}:${BC_PASSWORD}" \
+        -X PATCH \
         -H "Content-Type: application/octet-stream" \
         -H "If-Match: *" \
         --data-binary "@${app_file}" \
-        "${upload_url}" 2>&1)
+        "${api_url}" 2>&1)
     
-    local upload_http_code=$(echo "$upload_response" | tail -n 1)
-    local upload_body=$(echo "$upload_response" | sed '$d')
+    local http_code=$(echo "$response" | tail -n 1)
+    local body=$(echo "$response" | sed '$d')
     
-    if [ "$upload_http_code" = "204" ] || [ "$upload_http_code" = "200" ]; then
-        echo "  ✓ Published successfully"
+    if [ "$http_code" = "204" ] || [ "$http_code" = "200" ]; then
+        echo "  ✓ Published successfully (HTTP $http_code)"
         return 0
     else
-        echo "  ✗ Upload failed (HTTP $upload_http_code)"
-        if [ -n "$upload_body" ]; then
-            echo "  Response: $upload_body" | head -c 200
+        echo "  ✗ Failed (HTTP $http_code)"
+        if [ -n "$body" ]; then
+            echo "  Response: $body" | head -c 300
             echo ""
         fi
         return 1
