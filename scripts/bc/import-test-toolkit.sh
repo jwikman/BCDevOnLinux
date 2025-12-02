@@ -6,246 +6,150 @@ echo "========================================="
 echo "INSTALLING BC TEST TOOLKIT"
 echo "========================================="
 
-# Find BC Management module in artifacts (dynamic version detection)
-BC_ARTIFACTS_PATH="/home/bcartifacts/ServiceTier/program files/Microsoft Dynamics NAV"
-if [ ! -d "$BC_ARTIFACTS_PATH" ]; then
-    echo "ERROR: BC artifacts path not found: $BC_ARTIFACTS_PATH"
-    exit 1
-fi
+# BC Server connection details
+BC_SERVER="localhost"
+BC_PORT="7049"
+BC_INSTANCE="BC"
+BC_TENANT="default"
+BC_USERNAME="${ADMIN_USERNAME:-admin}"
+BC_PASSWORD="${ADMIN_PASSWORD:-Admin123!}"
+BC_BASE_URL="http://${BC_SERVER}:${BC_PORT}/${BC_INSTANCE}"
 
-# Get the BC version directory (latest/only one)
-BC_VERSION_DIR=$(ls -1d "$BC_ARTIFACTS_PATH"/*/ 2>/dev/null | head -1)
-if [ -z "$BC_VERSION_DIR" ]; then
-    echo "ERROR: No BC version directory found in $BC_ARTIFACTS_PATH"
-    exit 1
-fi
+echo "Using BC server: $BC_BASE_URL"
+echo "Tenant: $BC_TENANT"
+echo ""
 
-BC_VERSION=$(basename "$BC_VERSION_DIR")
-MODULE_PATH="$BC_VERSION_DIR/Service/Microsoft.Dynamics.Nav.Management.psm1"
-
-if [ ! -f "$MODULE_PATH" ]; then
-    echo "ERROR: BC Management module not found at: $MODULE_PATH"
-    exit 1
-fi
-
-echo "Detected BC version: $BC_VERSION"
-echo "Using BC Management module: $MODULE_PATH"
-
-# Create temporary PowerShell script to sync and install test toolkit apps
-# This will run using pwsh (PowerShell Core on Linux)
-TEMP_PS1="/tmp/import-test-toolkit-$$.ps1"
-cat > "$TEMP_PS1" << 'PSEOF'
-# Import BC Management module from artifacts
-$modulePath = "{MODULE_PATH}"
-Import-Module $modulePath -ErrorAction Stop
-
-$serverInstance = 'BC'
-$tenant = 'default'
-
-Write-Host "Getting published test toolkit apps from server..."
-
-# Get all published apps from the server
-$publishedApps = Get-NAVAppInfo -ServerInstance $serverInstance | Where-Object {
-    $_.Publisher -eq 'Microsoft' -and
-    ($_.Name -like '*Test*' -or $_.Name -like '*Performance Toolkit*')
+# Function to get published apps using OData API
+get_published_test_apps() {
+    local api_url="${BC_BASE_URL}/api/microsoft/automation/v2.0/companies(00000000-0000-0000-0000-000000000000)/extensions?\$filter=publisher eq 'Microsoft' and (contains(displayName,'Test') or contains(displayName,'Performance Toolkit'))"
+    
+    curl -s -u "${BC_USERNAME}:${BC_PASSWORD}" "$api_url" | \
+        python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    if 'value' in data:
+        for ext in data['value']:
+            print(f\"{ext['displayName']}|{ext['versionMajor']}.{ext['versionMinor']}.{ext['versionBuild']}.{ext['versionRevision']}\")
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(1)
+" 2>/dev/null
 }
 
-if ($publishedApps.Count -eq 0) {
-    Write-Error "No published test toolkit apps found"
-    exit 1
+# Function to install an extension using Automation API
+install_extension() {
+    local app_name="$1"
+    local app_version="$2"
+    
+    echo "  Installing: $app_name $app_version"
+    
+    # Use the extensionDeploymentStatus API to install
+    local api_url="${BC_BASE_URL}/api/microsoft/automation/v2.0/companies(00000000-0000-0000-0000-000000000000)/extensionDeploymentStatus"
+    local payload=$(cat <<EOF
+{
+    "name": "$app_name",
+    "publisher": "Microsoft",
+    "version": "$app_version",
+    "deploy": true
+}
+EOF
+)
+    
+    local response=$(curl -s -w "\n%{http_code}" -u "${BC_USERNAME}:${BC_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -X POST \
+        -d "$payload" \
+        "$api_url" 2>&1)
+    
+    local http_code=$(echo "$response" | tail -n 1)
+    local body=$(echo "$response" | sed '$d')
+    
+    if [ "$http_code" = "201" ] || [ "$http_code" = "200" ]; then
+        echo "    ✓ Installation initiated successfully"
+        return 0
+    else
+        echo "    ✗ Failed (HTTP $http_code)"
+        echo "    Response: $body"
+        return 1
+    fi
 }
 
-Write-Host "Found $($publishedApps.Count) published test toolkit app(s)"
+echo "Discovering published test toolkit apps..."
+published_apps=$(get_published_test_apps)
 
-# Get tenant-specific app info to see what's installed
-$tenantApps = Get-NAVAppInfo -ServerInstance $serverInstance -Tenant $tenant -TenantSpecificProperties
+if [ -z "$published_apps" ]; then
+    echo "ERROR: No test toolkit apps found published on the server"
+    exit 1
+fi
 
-# Define the installation order based on dependencies
-$orderedPatterns = @(
-    'Permissions Mock',
-    'Test Runner',
-    'Any',
-    'Library Assert',
-    'Library Variable Storage',
-    'System Application Test Library',
-    'Business Foundation Test Libraries',
-    'Application Test Library',
-    'Tests-TestLibraries',
-    'AI Test Toolkit',
-    # 'System Application Test',
-    # 'Business Foundation Tests',
-    # 'Tests-',
-    'Performance Toolkit'
+echo "Found published test toolkit apps:"
+echo "$published_apps" | while IFS='|' read -r name version; do
+    echo "  - $name ($version)"
+done
+echo ""
+
+# Define installation order based on dependencies
+installation_order=(
+    "Permissions Mock"
+    "Test Runner"
+    "Any"
+    "Library Assert"
+    "Library Variable Storage"
+    "System Application Test Library"
+    "Business Foundation Test Libraries"
+    "Application Test Library"
+    "Tests-TestLibraries"
+    "AI Test Toolkit"
+    "Performance Toolkit"
 )
 
-$installedCount = 0
-$skippedCount = 0
-$alreadyInstalledCount = 0
+installed_count=0
+failed_count=0
+skipped_count=0
 
-foreach ($pattern in $orderedPatterns) {
-    $matchingApps = $publishedApps | Where-Object { $_.Name -like "*$pattern*" } | Sort-Object Name
-
-    foreach ($app in $matchingApps) {
-        # Skip SINGLESERVER tests
-        if ($app.Name -like "*SINGLESERVER*") {
-            Write-Host "Skipping SINGLESERVER test: $($app.Name)" -ForegroundColor Yellow
-            $skippedCount++
-            continue
-        }
-
-        # Check if already installed
-        $tenantApp = $tenantApps | Where-Object {
-            $_.AppId -eq $app.AppId -and $_.Version -eq $app.Version
-        }
-
-        if ($tenantApp -and $tenantApp.IsInstalled) {
-            Write-Host "Already installed: $($app.Name) $($app.Version)" -ForegroundColor Gray
-            $alreadyInstalledCount++
-            continue
-        }
-
-        try {
-            Write-Host "Syncing and installing: $($app.Name) $($app.Version)" -ForegroundColor Cyan
-
-            # Sync the app if needed
-            if (-not $tenantApp -or $tenantApp.SyncState -ne 'Synced') {
-                Write-Host "  Syncing app..." -ForegroundColor Gray
-                Sync-NavApp -ServerInstance $serverInstance `
-                           -Name $app.Name `
-                           -Publisher $app.Publisher `
-                           -Version $app.Version `
-                           -Tenant $tenant `
-                           -ErrorAction Stop
-                
-                # Wait for sync to complete and verify
-                $syncTimeout = 60
-                $syncElapsed = 0
-                $synced = $false
-                while ($syncElapsed -lt $syncTimeout -and -not $synced) {
-                    Start-Sleep -Seconds 2
-                    $syncElapsed += 2
-                    $checkApp = Get-NAVAppInfo -ServerInstance $serverInstance -Tenant $tenant -TenantSpecificProperties | Where-Object {
-                        $_.AppId -eq $app.AppId -and $_.Version -eq $app.Version
-                    }
-                    if ($checkApp -and $checkApp.SyncState -eq 'Synced') {
-                        $synced = $true
-                        Write-Host "  ✓ Sync completed" -ForegroundColor Gray
-                    }
-                }
-                if (-not $synced) {
-                    throw "Sync timeout after $syncTimeout seconds"
-                }
-            } else {
-                Write-Host "  Already synced" -ForegroundColor Gray
-            }
-
-            # Install the app
-            Write-Host "  Installing app..." -ForegroundColor Gray
-            Install-NavApp -ServerInstance $serverInstance `
-                          -Name $app.Name `
-                          -Publisher $app.Publisher `
-                          -Version $app.Version `
-                          -Tenant $tenant `
-                          -ErrorAction Stop
-            
-            # Wait for installation to complete and verify
-            $installTimeout = 120
-            $installElapsed = 0
-            $installed = $false
-            while ($installElapsed -lt $installTimeout -and -not $installed) {
-                Start-Sleep -Seconds 2
-                $installElapsed += 2
-                $checkApp = Get-NAVAppInfo -ServerInstance $serverInstance -Tenant $tenant -TenantSpecificProperties | Where-Object {
-                    $_.AppId -eq $app.AppId -and $_.Version -eq $app.Version
-                }
-                if ($checkApp -and $checkApp.IsInstalled) {
-                    $installed = $true
-                    Write-Host "  ✓ Installation completed" -ForegroundColor Gray
-                }
-            }
-            if (-not $installed) {
-                throw "Installation timeout after $installTimeout seconds"
-            }
-
-            Write-Host "✓ Successfully installed: $($app.Name)" -ForegroundColor Green
-            $installedCount++
-        }
-        catch {
-            Write-Host "✗ Failed to install $($app.Name): $_" -ForegroundColor Red
-            Write-Host "Continuing with next app..." -ForegroundColor Yellow
-        }
-    }
-}
-
-Write-Host ""
-Write-Host "========================================="
-Write-Host "TEST TOOLKIT IMPORT SUMMARY"
-Write-Host "========================================="
-Write-Host "Newly installed: $installedCount app(s)" -ForegroundColor Green
-Write-Host "Already installed: $alreadyInstalledCount app(s)" -ForegroundColor Gray
-Write-Host "Skipped: $skippedCount app(s)" -ForegroundColor Yellow
-Write-Host ""
-
-if ($installedCount -eq 0 -and $alreadyInstalledCount -eq 0) {
-    Write-Error "No test toolkit apps were installed successfully"
-    exit 1
-}
-
-# Final verification: List all installed test toolkit apps
-Write-Host "========================================="
-Write-Host "VERIFYING INSTALLED TEST TOOLKIT APPS"
-Write-Host "========================================="
-$finalCheck = Get-NAVAppInfo -ServerInstance $serverInstance -Tenant $tenant -TenantSpecificProperties | Where-Object {
-    $_.IsInstalled -and $_.Publisher -eq 'Microsoft' -and
-    ($_.Name -like '*Test*' -or $_.Name -like '*Performance Toolkit*')
-} | Sort-Object Name
-
-if ($finalCheck.Count -eq 0) {
-    Write-Error "Verification failed: No test toolkit apps are installed on the tenant"
-    exit 1
-}
-
-Write-Host "Found $($finalCheck.Count) installed test toolkit app(s):" -ForegroundColor Green
-foreach ($app in $finalCheck) {
-    Write-Host "  ✓ $($app.Name) ($($app.Version))" -ForegroundColor Green
-}
-Write-Host ""
-
-PSEOF
-
-# Replace placeholders in the PowerShell script
-sed -i "s|{MODULE_PATH}|$MODULE_PATH|g" "$TEMP_PS1"
-
-echo "Executing PowerShell script to import test toolkit apps..."
-echo "This may take several minutes depending on the number of apps..."
+echo "Installing test toolkit apps in dependency order..."
 echo ""
 
-# Execute the PowerShell script using PowerShell Core (pwsh) on Linux
-# NOT using Wine PowerShell which is just a stub
-pwsh -ExecutionPolicy Bypass -File "$TEMP_PS1" 2>&1 | tee /tmp/import-test-toolkit.log
-POWERSHELL_EXIT_CODE=${PIPESTATUS[0]}
-
-echo ""
-if [ $POWERSHELL_EXIT_CODE -eq 0 ]; then
-    echo "✓ Test toolkit import completed successfully!"
-    if [ "$VERBOSE_LOGGING" = "true" ] || [ "$VERBOSE_LOGGING" = "1" ]; then
-        echo ""
-        echo "========================================="
-        echo "FULL IMPORT LOG:"
-        echo "========================================="
-        cat /tmp/import-test-toolkit.log
-        echo "========================================="
+for pattern in "${installation_order[@]}"; do
+    # Find matching apps
+    matching_apps=$(echo "$published_apps" | grep -i "$pattern" || true)
+    
+    if [ -z "$matching_apps" ]; then
+        continue
     fi
-    rm -f "$TEMP_PS1"
-    exit 0
-else
-    echo "✗ Test toolkit import failed (exit code: $POWERSHELL_EXIT_CODE)"
-    echo ""
-    echo "========================================="
-    echo "FULL IMPORT LOG:"
-    echo "========================================="
-    cat /tmp/import-test-toolkit.log
-    echo "========================================="
-    rm -f "$TEMP_PS1"
+    
+    echo "$matching_apps" | while IFS='|' read -r name version; do
+        # Skip SINGLESERVER tests
+        if echo "$name" | grep -qi "SINGLESERVER"; then
+            echo "  Skipping: $name (SINGLESERVER test)"
+            skipped_count=$((skipped_count + 1))
+            continue
+        fi
+        
+        if install_extension "$name" "$version"; then
+            installed_count=$((installed_count + 1))
+            # Wait a bit for installation to process
+            sleep 2
+        else
+            failed_count=$((failed_count + 1))
+        fi
+    done
+done
+
+echo ""
+echo "========================================="
+echo "TEST TOOLKIT INSTALLATION SUMMARY"
+echo "========================================="
+echo "Attempted installations: $installed_count"
+echo "Failed: $failed_count"
+echo "Skipped: $skipped_count"
+echo ""
+
+if [ $installed_count -eq 0 ]; then
+    echo "ERROR: No test toolkit apps were installed successfully"
     exit 1
 fi
+
+echo "✓ Test toolkit installation completed!"
+exit 0
