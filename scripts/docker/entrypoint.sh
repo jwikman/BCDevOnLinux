@@ -81,7 +81,7 @@ if [ ! -f "/home/.admin-user-created" ] && command -v sqlcmd >/dev/null 2>&1; th
     if /home/scripts/bc/create-bc-user.sh admin "${ADMIN_PASSWORD}" SUPER 2>&1; then
         echo "✅ Default admin user created successfully"
         echo "   Username: admin"
-        echo "   Password: ${ADMIN_PASSWORD}"
+        echo "   Password: ***masked***"
         echo "   Permission Set: SUPER"
         touch /home/.admin-user-created
     else
