@@ -7,191 +7,220 @@ echo "========================================="
 echo "INSTALLING BC TEST TOOLKIT"
 echo "========================================="
 
-# BC Server connection details
-BC_SERVER="localhost"
-BC_PORT="7049"
-BC_INSTANCE="BC"
+# BC Server instance details
+BC_SERVER_INSTANCE="BC"
 BC_TENANT="default"
-# Use environment variables or defaults
 BC_USERNAME="${ADMIN_USERNAME:-admin}"
 BC_PASSWORD="${ADMIN_PASSWORD:-Admin123!}"
-BC_BASE_URL="http://${BC_SERVER}:${BC_PORT}/${BC_INSTANCE}"
 
-echo "Using BC server: $BC_BASE_URL"
+echo "Server Instance: $BC_SERVER_INSTANCE"
 echo "Tenant: $BC_TENANT"
 echo "Username: $BC_USERNAME"
 echo ""
 
-# NOTE: Credentials are passed via curl -u flag. This is acceptable for local
-# container environments but would expose credentials in process lists in production.
-# For production, consider using .netrc or other secure credential storage.
+# Wait for BC Web Services to be fully ready
+# The server might report "ready" but web services take additional time to initialize
+echo "Waiting for BC Web Services to be ready..."
+MAX_WAIT=60
+WAIT_COUNT=0
+WS_READY=false
 
-# Function to get published apps using OData API
-# Requires Python 3.6+ for f-string support
-get_published_test_apps() {
-    local api_url="${BC_BASE_URL}/api/microsoft/automation/v2.0/companies(00000000-0000-0000-0000-000000000000)/extensions?\$filter=publisher eq 'Microsoft' and (contains(displayName,'Test') or contains(displayName,'Performance Toolkit'))"
+while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
+    # Try to connect to the API
+    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 5 -u "${BC_USERNAME}:${BC_PASSWORD}" "http://localhost:7048/BC/api/v2.0/companies" 2>/dev/null || echo "000")
     
-    curl -s -u "${BC_USERNAME}:${BC_PASSWORD}" "$api_url" | \
-        python3 -c "
+    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "401" ]; then
+        WS_READY=true
+        echo "✓ BC Web Services are responding (HTTP $HTTP_CODE)"
+        break
+    fi
+    
+    echo "  Waiting... ($WAIT_COUNT/$MAX_WAIT) - HTTP: $HTTP_CODE"
+    sleep 2
+    WAIT_COUNT=$((WAIT_COUNT + 1))
+done
+
+if [ "$WS_READY" = false ]; then
+    echo "⚠️  WARNING: BC Web Services did not become ready within ${MAX_WAIT} attempts"
+    echo "The API may not be accessible yet. This can happen when:"
+    echo "  - Web services are still initializing"
+    echo "  - There's a configuration issue"
+    echo ""
+    echo "Skipping test toolkit installation. BC Server will continue running."
+    echo "You may need to install test toolkit apps manually later."
+    exit 0
+fi
+
+echo ""
+
+# Get company name (needed for query parameters)
+echo "Getting company information..."
+COMPANY_RESPONSE=$(curl -s -m 10 -u "${BC_USERNAME}:${BC_PASSWORD}" "http://localhost:7048/BC/api/v2.0/companies" 2>&1)
+
+COMPANY_NAME=$(echo "$COMPANY_RESPONSE" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    if 'value' in data:
-        for ext in data['value']:
-            print(f\"{ext['displayName']}|{ext['versionMajor']}.{ext['versionMinor']}.{ext['versionBuild']}.{ext['versionRevision']}\")
-except Exception as e:
-    print(f'Error parsing API response: {e}', file=sys.stderr)
+    if 'value' in data and len(data['value']) > 0:
+        print(data['value'][0]['name'])
+    else:
+        sys.exit(1)
+except:
     sys.exit(1)
-"
-}
+" 2>/dev/null)
 
-# Function to install an extension using Automation API
-install_extension() {
-    local app_name="$1"
-    local app_version="$2"
-    
-    echo "  Installing: $app_name $app_version"
-    
-    # Use the extensionDeploymentStatus API to install
-    local api_url="${BC_BASE_URL}/api/microsoft/automation/v2.0/companies(00000000-0000-0000-0000-000000000000)/extensionDeploymentStatus"
-    local payload=$(cat <<EOF
-{
-    "name": "$app_name",
-    "publisher": "Microsoft",
-    "version": "$app_version",
-    "deploy": true
-}
-EOF
+if [ -z "$COMPANY_NAME" ]; then
+    echo "⚠️  WARNING: Could not get company name from BC API"
+    echo "API Response (first 500 chars):"
+    echo "$COMPANY_RESPONSE" | head -c 500
+    echo ""
+    echo ""
+    echo "Skipping test toolkit installation. BC Server will continue running."
+    exit 0
+fi
+
+echo "✓ Found company: $COMPANY_NAME"
+# URL-encode the company name for use in query parameters
+COMPANY_NAME_ENCODED=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$COMPANY_NAME'))")
+echo ""
+
+# Define test toolkit apps in dependency order
+declare -a TEST_APPS=(
+    "/home/bcartifacts/applications/testframework/testlibraries/permissions mock/Microsoft_Permissions Mock.app"
+    "/home/bcartifacts/applications/testframework/TestRunner/Microsoft_Test Runner.app"
+    "/home/bcartifacts/applications/testframework/testlibraries/any/Microsoft_Any.app"
+    "/home/bcartifacts/applications/testframework/testlibraries/assert/Microsoft_Library Assert.app"
+    "/home/bcartifacts/applications/testframework/testlibraries/variable storage/Microsoft_Library Variable Storage.app"
+    "/home/bcartifacts/applications/BaseApp/Test/Microsoft_System Application Test Library.app"
+    "/home/bcartifacts/applications/BusinessFoundation/Test/Microsoft_Business Foundation Test Libraries.app"
+    "/home/bcartifacts/applications/Application/Test/Microsoft_Tests-TestLibraries.app"
+    "/home/bcartifacts/applications/testframework/aitesttoolkit/Microsoft_AI Test Toolkit.app"
+    "/home/bcartifacts/applications/testframework/performancetoolkit/Microsoft_Performance Toolkit.app"
 )
+
+# Function to publish app using Automation API
+publish_app() {
+    local app_file="$1"
+    local app_name=$(basename "$app_file" .app)
     
-    local response=$(curl -s -w "\n%{http_code}" -u "${BC_USERNAME}:${BC_PASSWORD}" \
-        -H "Content-Type: application/json" \
+    echo "Publishing: $app_name"
+    
+    if [ ! -f "$app_file" ]; then
+        echo "  ⚠️  App file not found"
+        return 1
+    fi
+    
+    # Step 1: Create extensionUpload entity
+    local create_response=$(curl -s -m 30 -w "\n%{http_code}" -u "${BC_USERNAME}:${BC_PASSWORD}" \
         -X POST \
-        -d "$payload" \
-        "$api_url" 2>&1)
+        -H "Content-Type: application/json" \
+        -d '{"schedule":"Current Version"}' \
+        "http://localhost:7048/BC/api/microsoft/automation/v2.0/extensionUpload?company=${COMPANY_NAME_ENCODED}" 2>&1)
     
-    local http_code=$(echo "$response" | tail -n 1)
-    local body=$(echo "$response" | sed '$d')
+    local create_http_code=$(echo "$create_response" | tail -n 1)
+    local create_body=$(echo "$create_response" | sed '$d')
     
-    if [ "$http_code" = "201" ] || [ "$http_code" = "200" ]; then
-        echo "    ✓ Installation initiated successfully"
+    if [ "$create_http_code" != "201" ]; then
+        echo "  ✗ Failed to create upload entity (HTTP $create_http_code)"
+        if [ -n "$create_body" ]; then
+            echo "  Response: $create_body" | head -c 200
+            echo ""
+        fi
+        return 1
+    fi
+    
+    # Extract systemId and mediaEditLink from response
+    local system_id=$(echo "$create_body" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('systemId', ''))
+except:
+    sys.exit(1)
+" 2>/dev/null)
+    
+    if [ -z "$system_id" ]; then
+        echo "  ✗ Failed to extract systemId from response"
+        return 1
+    fi
+    
+    # Step 2: Upload the binary content
+    local upload_url="http://localhost:7048/BC/api/microsoft/automation/v2.0/extensionUpload(${system_id})/extensionContent?company=${COMPANY_NAME_ENCODED}"
+    
+    local upload_response=$(curl -s -m 120 -w "\n%{http_code}" -u "${BC_USERNAME}:${BC_PASSWORD}" \
+        -X PUT \
+        -H "Content-Type: application/octet-stream" \
+        -H "If-Match: *" \
+        --data-binary "@${app_file}" \
+        "${upload_url}" 2>&1)
+    
+    local upload_http_code=$(echo "$upload_response" | tail -n 1)
+    local upload_body=$(echo "$upload_response" | sed '$d')
+    
+    if [ "$upload_http_code" = "204" ] || [ "$upload_http_code" = "200" ]; then
+        echo "  ✓ Published successfully"
         return 0
     else
-        echo "    ✗ Failed (HTTP $http_code)"
-        echo "    Response: $body"
+        echo "  ✗ Upload failed (HTTP $upload_http_code)"
+        if [ -n "$upload_body" ]; then
+            echo "  Response: $upload_body" | head -c 200
+            echo ""
+        fi
         return 1
     fi
 }
 
-echo "Discovering published test toolkit apps..."
-published_apps=$(get_published_test_apps)
-get_apps_exit_code=$?
-
-if [ $get_apps_exit_code -ne 0 ]; then
-    echo "⚠️  WARNING: Failed to get published test toolkit apps from BC server"
-    echo "This could be due to:"
-    echo "  - BC Server not fully ready yet"
-    echo "  - Authentication failure (check ADMIN_USERNAME/ADMIN_PASSWORD)"
-    echo "  - API not accessible"
-    echo "  - Test toolkit apps not published on the server"
-    echo ""
-    echo "Skipping test toolkit installation. BC Server will continue running."
-    echo "You can manually install test toolkit apps later if needed."
-    exit 0
-fi
-
-if [ -z "$published_apps" ]; then
-    echo "⚠️  WARNING: No test toolkit apps found published on the server"
-    echo "Test toolkit apps must be published before they can be installed."
-    echo ""
-    echo "This is normal if:"
-    echo "  - This is a fresh BC installation"
-    echo "  - Test toolkit apps haven't been published yet"
-    echo ""
-    echo "Skipping test toolkit installation. BC Server will continue running."
-    exit 0
-fi
-
-echo "Found published test toolkit apps:"
-while IFS='|' read -r name version; do
-    echo "  - $name ($version)"
-done < <(echo "$published_apps")
-echo ""
-
-# Define installation order based on dependencies
-installation_order=(
-    "Permissions Mock"
-    "Test Runner"
-    "Any"
-    "Library Assert"
-    "Library Variable Storage"
-    "System Application Test Library"
-    "Business Foundation Test Libraries"
-    "Application Test Library"
-    "Tests-TestLibraries"
-    "AI Test Toolkit"
-    "Performance Toolkit"
-)
-
-installed_count=0
+# Publish apps
+published_count=0
 failed_count=0
 skipped_count=0
 
-echo "Installing test toolkit apps in dependency order..."
+echo "Publishing test toolkit apps..."
 echo ""
 
-for pattern in "${installation_order[@]}"; do
-    # Find matching apps
-    matching_apps=$(echo "$published_apps" | grep -i "$pattern" || true)
-    
-    if [ -z "$matching_apps" ]; then
-        continue
-    fi
-    
-    while IFS='|' read -r name version; do
-        # Skip SINGLESERVER tests
-        if echo "$name" | grep -qi "SINGLESERVER"; then
-            echo "  Skipping: $name (SINGLESERVER test)"
-            skipped_count=$((skipped_count + 1))
-            continue
-        fi
-        
-        if install_extension "$name" "$version"; then
-            installed_count=$((installed_count + 1))
-            # Wait a bit for installation to process
-            sleep 2
-        else
+for app_file in "${TEST_APPS[@]}"; do
+    if publish_app "$app_file"; then
+        published_count=$((published_count + 1))
+        # Wait between apps to let BC process them
+        sleep 3
+    else
+        if [ -f "$app_file" ]; then
             failed_count=$((failed_count + 1))
+        else
+            skipped_count=$((skipped_count + 1))
         fi
-    done < <(echo "$matching_apps")
+    fi
+    echo ""
 done
 
-echo ""
 echo "========================================="
 echo "TEST TOOLKIT INSTALLATION SUMMARY"
 echo "========================================="
-echo "Attempted installations: $installed_count"
+echo "Published: $published_count"
 echo "Failed: $failed_count"
-echo "Skipped: $skipped_count"
+echo "Skipped (not found): $skipped_count"
 echo ""
 
-if [ $installed_count -eq 0 ] && [ $failed_count -gt 0 ]; then
-    echo "⚠️  WARNING: No test toolkit apps were installed successfully"
-    echo "Some installations failed. Check the logs above for details."
+if [ $published_count -eq 0 ] && [ $failed_count -gt 0 ]; then
+    echo "⚠️  WARNING: No test toolkit apps were published successfully"
+    echo "Some publications failed. Check the logs above for details."
     echo "BC Server will continue running."
     exit 0
-elif [ $installed_count -eq 0 ]; then
-    echo "⚠️  INFO: No test toolkit apps were installed"
-    echo "This could be because:"
-    echo "  - No matching test toolkit apps were found"
-    echo "  - All apps were skipped (e.g., SINGLESERVER tests)"
+elif [ $published_count -eq 0 ]; then
+    echo "⚠️  INFO: No test toolkit apps were published"
     echo "BC Server will continue running."
     exit 0
 fi
 
-echo "✓ Test toolkit installation completed!"
-echo "$installed_count app(s) installed successfully"
+echo "✓ Test toolkit publication completed!"
+echo "$published_count app(s) published successfully"
 if [ $failed_count -gt 0 ]; then
-    echo "⚠️  $failed_count app(s) failed to install"
+    echo "⚠️  $failed_count app(s) failed to publish"
 fi
+if [ $skipped_count -gt 0 ]; then
+    echo "ℹ️  $skipped_count app(s) skipped (files not found)"
+fi
+
+echo ""
+echo "Note: Apps are published and automatically installed on the tenant."
 exit 0
