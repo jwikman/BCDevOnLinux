@@ -51,9 +51,9 @@ $orderedPatterns = @(
     'Application Test Library',
     'Tests-TestLibraries',
     'AI Test Toolkit',
-    'System Application Test',
-    'Business Foundation Tests',
-    'Tests-',
+    # 'System Application Test',
+    # 'Business Foundation Tests',
+    # 'Tests-',
     'Performance Toolkit'
 )
 
