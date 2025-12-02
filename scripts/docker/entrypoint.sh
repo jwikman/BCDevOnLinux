@@ -118,7 +118,7 @@ else
 
     # Wait for BC Server to be fully ready (check for the readiness message in logs)
     echo "Waiting for BC Server to be ready..."
-    timeout=300
+    timeout=600
     elapsed=0
     while [ $elapsed -lt $timeout ]; do
         if [ -f /var/log/bc-server.log ] && grep -q "Press Enter to stop the console server" /var/log/bc-server.log; then
