@@ -88,21 +88,63 @@ foreach ($pattern in $orderedPatterns) {
 
             # Sync the app if needed
             if (-not $tenantApp -or $tenantApp.SyncState -ne 'Synced') {
+                Write-Host "  Syncing app..." -ForegroundColor Gray
                 Sync-NavApp -ServerInstance $serverInstance `
                            -Name $app.Name `
                            -Publisher $app.Publisher `
                            -Version $app.Version `
                            -Tenant $tenant `
                            -ErrorAction Stop
+                
+                # Wait for sync to complete and verify
+                $syncTimeout = 60
+                $syncElapsed = 0
+                $synced = $false
+                while ($syncElapsed -lt $syncTimeout -and -not $synced) {
+                    Start-Sleep -Seconds 2
+                    $syncElapsed += 2
+                    $checkApp = Get-NAVAppInfo -ServerInstance $serverInstance -Tenant $tenant -TenantSpecificProperties | Where-Object {
+                        $_.AppId -eq $app.AppId -and $_.Version -eq $app.Version
+                    }
+                    if ($checkApp -and $checkApp.SyncState -eq 'Synced') {
+                        $synced = $true
+                        Write-Host "  ✓ Sync completed" -ForegroundColor Gray
+                    }
+                }
+                if (-not $synced) {
+                    throw "Sync timeout after $syncTimeout seconds"
+                }
+            } else {
+                Write-Host "  Already synced" -ForegroundColor Gray
             }
 
             # Install the app
+            Write-Host "  Installing app..." -ForegroundColor Gray
             Install-NavApp -ServerInstance $serverInstance `
                           -Name $app.Name `
                           -Publisher $app.Publisher `
                           -Version $app.Version `
                           -Tenant $tenant `
                           -ErrorAction Stop
+            
+            # Wait for installation to complete and verify
+            $installTimeout = 120
+            $installElapsed = 0
+            $installed = $false
+            while ($installElapsed -lt $installTimeout -and -not $installed) {
+                Start-Sleep -Seconds 2
+                $installElapsed += 2
+                $checkApp = Get-NAVAppInfo -ServerInstance $serverInstance -Tenant $tenant -TenantSpecificProperties | Where-Object {
+                    $_.AppId -eq $app.AppId -and $_.Version -eq $app.Version
+                }
+                if ($checkApp -and $checkApp.IsInstalled) {
+                    $installed = $true
+                    Write-Host "  ✓ Installation completed" -ForegroundColor Gray
+                }
+            }
+            if (-not $installed) {
+                throw "Installation timeout after $installTimeout seconds"
+            }
 
             Write-Host "✓ Successfully installed: $($app.Name)" -ForegroundColor Green
             $installedCount++
@@ -128,6 +170,26 @@ if ($installedCount -eq 0 -and $alreadyInstalledCount -eq 0) {
     exit 1
 }
 
+# Final verification: List all installed test toolkit apps
+Write-Host "========================================="
+Write-Host "VERIFYING INSTALLED TEST TOOLKIT APPS"
+Write-Host "========================================="
+$finalCheck = Get-NAVAppInfo -ServerInstance $serverInstance -Tenant $tenant -TenantSpecificProperties | Where-Object {
+    $_.IsInstalled -and $_.Publisher -eq 'Microsoft' -and
+    ($_.Name -like '*Test*' -or $_.Name -like '*Performance Toolkit*')
+} | Sort-Object Name
+
+if ($finalCheck.Count -eq 0) {
+    Write-Error "Verification failed: No test toolkit apps are installed on the tenant"
+    exit 1
+}
+
+Write-Host "Found $($finalCheck.Count) installed test toolkit app(s):" -ForegroundColor Green
+foreach ($app in $finalCheck) {
+    Write-Host "  ✓ $($app.Name) ($($app.Version))" -ForegroundColor Green
+}
+Write-Host ""
+
 PSEOF
 
 # Replace placeholders in the PowerShell script
@@ -135,10 +197,18 @@ sed -i "s|{BC_VERSION}|$BC_VERSION|g" "$TEMP_PS1"
 
 echo "Executing PowerShell script to import test toolkit apps..."
 echo "This may take several minutes depending on the number of apps..."
+echo ""
 
 # Execute the PowerShell script through Wine
+# Note: We explicitly output to console and tee to log file
 if wine powershell -ExecutionPolicy Bypass -File "Z:$(echo $TEMP_PS1 | sed 's|/|\\|g')" 2>&1 | tee /tmp/import-test-toolkit.log; then
-    echo ""
+    POWERSHELL_EXIT_CODE=${PIPESTATUS[0]}
+else
+    POWERSHELL_EXIT_CODE=${PIPESTATUS[0]}
+fi
+
+echo ""
+if [ $POWERSHELL_EXIT_CODE -eq 0 ]; then
     echo "✓ Test toolkit import completed successfully!"
     if [ "$VERBOSE_LOGGING" = "true" ] || [ "$VERBOSE_LOGGING" = "1" ]; then
         echo ""
@@ -151,8 +221,7 @@ if wine powershell -ExecutionPolicy Bypass -File "Z:$(echo $TEMP_PS1 | sed 's|/|
     rm -f "$TEMP_PS1"
     exit 0
 else
-    echo ""
-    echo "✗ Test toolkit import failed"
+    echo "✗ Test toolkit import failed (exit code: $POWERSHELL_EXIT_CODE)"
     echo ""
     echo "========================================="
     echo "FULL IMPORT LOG:"
