@@ -188,7 +188,7 @@ echo "BC Server started with PID $BC_PID"
 echo "Waiting for BC Server to initialize..."
 
 # Monitor log for readiness message
-timeout=180  # 3 minutes timeout
+timeout=600  # 10 minutes timeout
 elapsed=0
 while [ $elapsed -lt $timeout ]; do
     if grep -q "Press Enter to stop the console server" /var/log/bc-server.log; then
