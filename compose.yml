@@ -52,7 +52,7 @@ services:
       test: ["CMD-SHELL", "pgrep -f 'Microsoft.Dynamics.Nav.Server.exe' && netstat -tln | grep -q ':7048' || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 5
+      retries: 10
       start_period: 180s  # Reduced from 300s due to base image optimizations
 
   sql:
