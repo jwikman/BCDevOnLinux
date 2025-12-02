@@ -1,5 +1,6 @@
 #!/bin/bash
-set -e
+# Don't exit on errors - we want to report them and continue
+set +e
 
 echo ""
 echo "========================================="
@@ -87,19 +88,28 @@ published_apps=$(get_published_test_apps)
 get_apps_exit_code=$?
 
 if [ $get_apps_exit_code -ne 0 ]; then
-    echo "ERROR: Failed to get published test toolkit apps from BC server"
+    echo "⚠️  WARNING: Failed to get published test toolkit apps from BC server"
     echo "This could be due to:"
-    echo "  - BC Server not ready"
+    echo "  - BC Server not fully ready yet"
     echo "  - Authentication failure (check ADMIN_USERNAME/ADMIN_PASSWORD)"
     echo "  - API not accessible"
-    echo "Exit code: $get_apps_exit_code"
-    exit 1
+    echo "  - Test toolkit apps not published on the server"
+    echo ""
+    echo "Skipping test toolkit installation. BC Server will continue running."
+    echo "You can manually install test toolkit apps later if needed."
+    exit 0
 fi
 
 if [ -z "$published_apps" ]; then
-    echo "ERROR: No test toolkit apps found published on the server"
-    echo "Test toolkit apps must be published before they can be installed"
-    exit 1
+    echo "⚠️  WARNING: No test toolkit apps found published on the server"
+    echo "Test toolkit apps must be published before they can be installed."
+    echo ""
+    echo "This is normal if:"
+    echo "  - This is a fresh BC installation"
+    echo "  - Test toolkit apps haven't been published yet"
+    echo ""
+    echo "Skipping test toolkit installation. BC Server will continue running."
+    exit 0
 fi
 
 echo "Found published test toolkit apps:"
@@ -165,10 +175,23 @@ echo "Failed: $failed_count"
 echo "Skipped: $skipped_count"
 echo ""
 
-if [ $installed_count -eq 0 ]; then
-    echo "ERROR: No test toolkit apps were installed successfully"
-    exit 1
+if [ $installed_count -eq 0 ] && [ $failed_count -gt 0 ]; then
+    echo "⚠️  WARNING: No test toolkit apps were installed successfully"
+    echo "Some installations failed. Check the logs above for details."
+    echo "BC Server will continue running."
+    exit 0
+elif [ $installed_count -eq 0 ]; then
+    echo "⚠️  INFO: No test toolkit apps were installed"
+    echo "This could be because:"
+    echo "  - No matching test toolkit apps were found"
+    echo "  - All apps were skipped (e.g., SINGLESERVER tests)"
+    echo "BC Server will continue running."
+    exit 0
 fi
 
 echo "✓ Test toolkit installation completed!"
+echo "$installed_count app(s) installed successfully"
+if [ $failed_count -gt 0 ]; then
+    echo "⚠️  $failed_count app(s) failed to install"
+fi
 exit 0
