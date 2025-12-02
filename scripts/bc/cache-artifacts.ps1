@@ -79,7 +79,7 @@ if (Test-Path $PreDownloadedPath) {
 Write-Host "No cached artifacts found, downloading..." -ForegroundColor Yellow
 
 # Get artifact URL based on environment variables
-Import-Module BcContainerHelper -NoClobber
+Import-Module BcContainerHelper -DisableNameChecking
 
 $artifactUrl = $env:BC_ARTIFACT_URL
 

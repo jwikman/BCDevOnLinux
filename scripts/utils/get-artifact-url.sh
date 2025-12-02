@@ -26,7 +26,7 @@ get_artifact_url() {
             Write-Host 'Installing BcContainerHelper module...'
             Install-Module -Name BcContainerHelper -Force -Scope CurrentUser
         }
-        Import-Module BcContainerHelper -Force -NoClobber
+        Import-Module BcContainerHelper -Force -DisableNameChecking
 
         try {
             if ('$select' -eq 'latest') {
@@ -83,7 +83,7 @@ case $choice in
             if (-not (Get-Module -ListAvailable -Name BcContainerHelper)) {
                 Install-Module -Name BcContainerHelper -Force -Scope CurrentUser
             }
-            Import-Module BcContainerHelper -Force -NoClobber
+            Import-Module BcContainerHelper -Force -DisableNameChecking
             $custom_command
         ")
         ;;
