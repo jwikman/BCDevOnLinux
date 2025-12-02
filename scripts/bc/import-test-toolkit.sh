@@ -11,12 +11,14 @@ BC_SERVER="localhost"
 BC_PORT="7049"
 BC_INSTANCE="BC"
 BC_TENANT="default"
+# Use environment variables or defaults
 BC_USERNAME="${ADMIN_USERNAME:-admin}"
 BC_PASSWORD="${ADMIN_PASSWORD:-Admin123!}"
 BC_BASE_URL="http://${BC_SERVER}:${BC_PORT}/${BC_INSTANCE}"
 
 echo "Using BC server: $BC_BASE_URL"
 echo "Tenant: $BC_TENANT"
+echo "Username: $BC_USERNAME"
 echo ""
 
 # NOTE: Credentials are passed via curl -u flag. This is acceptable for local
@@ -37,9 +39,9 @@ try:
         for ext in data['value']:
             print(f\"{ext['displayName']}|{ext['versionMajor']}.{ext['versionMinor']}.{ext['versionBuild']}.{ext['versionRevision']}\")
 except Exception as e:
-    print(f'Error: {e}', file=sys.stderr)
+    print(f'Error parsing API response: {e}', file=sys.stderr)
     sys.exit(1)
-" 2>/dev/null
+"
 }
 
 # Function to install an extension using Automation API
@@ -82,9 +84,21 @@ EOF
 
 echo "Discovering published test toolkit apps..."
 published_apps=$(get_published_test_apps)
+get_apps_exit_code=$?
+
+if [ $get_apps_exit_code -ne 0 ]; then
+    echo "ERROR: Failed to get published test toolkit apps from BC server"
+    echo "This could be due to:"
+    echo "  - BC Server not ready"
+    echo "  - Authentication failure (check ADMIN_USERNAME/ADMIN_PASSWORD)"
+    echo "  - API not accessible"
+    echo "Exit code: $get_apps_exit_code"
+    exit 1
+fi
 
 if [ -z "$published_apps" ]; then
     echo "ERROR: No test toolkit apps found published on the server"
+    echo "Test toolkit apps must be published before they can be installed"
     exit 1
 fi
 
