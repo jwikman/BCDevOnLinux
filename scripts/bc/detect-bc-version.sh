@@ -64,5 +64,4 @@ fi  fi
 fi
 # Priority 4: Default fallback to BC 26.0
 echo "WARNING: Could not detect BC version from any source, using default 260" >&2
-echo "260"ING: Could not detect BC version, using default 260" >&2
 echo "260"
