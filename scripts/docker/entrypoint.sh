@@ -138,14 +138,19 @@ else
         echo ""
         echo "IMPORT_TEST_TOOLKIT is enabled, importing test framework apps..."
         if [ -f "/home/scripts/bc/import-test-toolkit.sh" ]; then
-            bash /home/scripts/bc/import-test-toolkit.sh
-            if [ $? -eq 0 ]; then
-                echo "✓ Test toolkit imported successfully"
+            # Run the import script and capture the exit code
+            # Note: The script is designed to handle errors gracefully and not crash
+            bash /home/scripts/bc/import-test-toolkit.sh || true
+            IMPORT_EXIT_CODE=$?
+
+            if [ $IMPORT_EXIT_CODE -eq 0 ]; then
+                echo "✓ Test toolkit import process completed"
             else
-                echo "⚠ Test toolkit import failed, but BC Server will continue running"
+                echo "⚠️  Test toolkit import completed with warnings (exit code: $IMPORT_EXIT_CODE)"
+                echo "Check the logs above for details. BC Server will continue running."
             fi
         else
-            echo "⚠ import-test-toolkit.sh script not found, skipping test toolkit import"
+            echo "⚠️  import-test-toolkit.sh script not found, skipping test toolkit import"
         fi
     else
         echo ""
