@@ -21,6 +21,7 @@ services:
       - ADMIN_USERNAME=${ADMIN_USERNAME}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - DATABASE_NAME=${DATABASE_NAME}
+      - VERBOSE_LOGGING=${VERBOSE_LOGGING}
       - WINEDEBUG=-all
     ports:
       - "7045:7045"  # BC Management Services
