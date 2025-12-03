@@ -110,7 +110,8 @@ declare -a TEST_APPS=(
 )
 
 # Function to publish app using Automation API
-# Using the approach from Waldo's script: PATCH directly to extensionUpload(0)/content
+# Uses 2-step process: POST to create entity, PUT to upload content
+# BC may crash during upload but recovers and completes the request
 publish_app() {
     local app_file="$1"
     local app_name=$(basename "$app_file" .app)
@@ -122,27 +123,61 @@ publish_app() {
         return 1
     fi
     
-    # Use PATCH method to upload directly to extensionUpload(0)/content
-    # This matches Waldo's approach but with v2.0 API
-    local api_url="http://localhost:7048/BC/api/microsoft/automation/v2.0/companies(${COMPANY_ID})/extensionUpload(0)/content"
+    # Step 1: Create extensionUpload entity
+    local create_url="http://localhost:7048/BC/api/microsoft/automation/v2.0/companies(${COMPANY_ID})/extensionUpload"
+    local create_response=$(curl -s -m 30 -w "\n%{http_code}" -u "${BC_USERNAME}:${BC_PASSWORD}" \
+        -X POST \
+        -H "Content-Type: application/json" \
+        -d '{"schedule":"Current Version"}' \
+        "${create_url}" 2>&1)
     
-    local response=$(curl -s -m 120 -w "\n%{http_code}" -u "${BC_USERNAME}:${BC_PASSWORD}" \
-        -X PATCH \
+    local create_http_code=$(echo "$create_response" | tail -n 1)
+    local create_body=$(echo "$create_response" | sed '$d')
+    
+    if [ "$create_http_code" != "201" ]; then
+        echo "  ✗ Failed to create upload entity (HTTP $create_http_code)"
+        if [ -n "$create_body" ]; then
+            echo "  Response: $create_body" | head -c 200
+            echo ""
+        fi
+        return 1
+    fi
+    
+    # Extract systemId from response
+    local system_id=$(echo "$create_body" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    print(data.get('systemId', ''))
+except:
+    sys.exit(1)
+" 2>/dev/null)
+    
+    if [ -z "$system_id" ]; then
+        echo "  ✗ Failed to extract systemId from response"
+        return 1
+    fi
+    
+    # Step 2: Upload binary content
+    # BC may crash during this but will recover and return success
+    local upload_url="http://localhost:7048/BC/api/microsoft/automation/v2.0/companies(${COMPANY_ID})/extensionUpload(${system_id})/extensionContent"
+    local upload_response=$(curl -s -m 180 -w "\n%{http_code}" -u "${BC_USERNAME}:${BC_PASSWORD}" \
+        -X PUT \
         -H "Content-Type: application/octet-stream" \
         -H "If-Match: *" \
         --data-binary "@${app_file}" \
-        "${api_url}" 2>&1)
+        "${upload_url}" 2>&1)
     
-    local http_code=$(echo "$response" | tail -n 1)
-    local body=$(echo "$response" | sed '$d')
+    local upload_http_code=$(echo "$upload_response" | tail -n 1)
+    local upload_body=$(echo "$upload_response" | sed '$d')
     
-    if [ "$http_code" = "204" ] || [ "$http_code" = "200" ]; then
-        echo "  ✓ Published successfully (HTTP $http_code)"
+    if [ "$upload_http_code" = "204" ] || [ "$upload_http_code" = "200" ]; then
+        echo "  ✓ Published successfully (HTTP $upload_http_code)"
         return 0
     else
-        echo "  ✗ Failed (HTTP $http_code)"
-        if [ -n "$body" ]; then
-            echo "  Response: $body" | head -c 300
+        echo "  ✗ Upload failed (HTTP $upload_http_code)"
+        if [ -n "$upload_body" ]; then
+            echo "  Response: $upload_body" | head -c 200
             echo ""
         fi
         return 1
@@ -160,14 +195,18 @@ echo ""
 for app_file in "${TEST_APPS[@]}"; do
     if publish_app "$app_file"; then
         published_count=$((published_count + 1))
-        # Wait between apps to let BC process them
-        sleep 3
+        # Wait longer for BC to process and recover from any crashes
+        echo "  Waiting 30 seconds for BC to process..."
+        sleep 30
     else
         if [ -f "$app_file" ]; then
             failed_count=$((failed_count + 1))
         else
             skipped_count=$((skipped_count + 1))
         fi
+        # Wait even after failure in case BC is recovering
+        echo "  Waiting 30 seconds before next app..."
+        sleep 30
     fi
     echo ""
 done
