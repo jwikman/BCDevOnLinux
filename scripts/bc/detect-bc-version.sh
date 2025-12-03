@@ -45,23 +45,25 @@ if [ -n "$BC_VERSION" ]; then
     fi
 fi
 
-# Priority 2: Fallback to detecting from artifacts directory (after installation)
-BC_ARTIFACTS_PATH="/home/bcartifacts/ServiceTier/program files/Microsoft Dynamics NAV"
+# Priority 3: Fallback to detecting from artifacts directory (after installation)
+# Check both possible folder names ("program files" for BC26-, "PFiles64" for BC27+)
+for program_files_dir in "program files" "PFiles64"; do
+    BC_ARTIFACTS_PATH="/home/bcartifacts/ServiceTier/$program_files_dir/Microsoft Dynamics NAV"
 
-if [ -d "$BC_ARTIFACTS_PATH" ]; then
-    BC_VERSION_DIR=$(find "$BC_ARTIFACTS_PATH" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1)
+    if [ -d "$BC_ARTIFACTS_PATH" ]; then
+        BC_VERSION_DIR=$(find "$BC_ARTIFACTS_PATH" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1)
 
-    if [ -n "$BC_VERSION_DIR" ]; then
-        BC_VERSION_NUM=$(basename "$BC_VERSION_DIR")
-        # Validate that it looks like a version number (should be numeric)
-        if [[ "$BC_VERSION_NUM" =~ ^[0-9]+$ ]]; then
-            echo "Detected BC version $BC_VERSION_NUM from artifacts directory" >&2
-            echo "$BC_VERSION_NUM"
-            exit 0
+        if [ -n "$BC_VERSION_DIR" ]; then
+            BC_VERSION_NUM=$(basename "$BC_VERSION_DIR")
+            # Validate that it looks like a version number (should be numeric)
+            if [[ "$BC_VERSION_NUM" =~ ^[0-9]+$ ]]; then
+                echo "Detected BC version $BC_VERSION_NUM from artifacts directory" >&2
+                echo "$BC_VERSION_NUM"
+                exit 0
+            fi
         fi
     fi
-fi  fi
-fi
+done
 # Priority 4: Default fallback to BC 26.0
 echo "WARNING: Could not detect BC version from any source, using default 260" >&2
 echo "260"
