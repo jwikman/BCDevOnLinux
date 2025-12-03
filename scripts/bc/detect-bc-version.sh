@@ -29,6 +29,7 @@ fi
 if [ -n "$BC_VERSION" ]; then
     # BC_VERSION can be in various formats:
     #   "26" or "25" (major only)
+    #   "260" or "250" (already in 3-digit format)
     #   "26.0" or "25.3" (major.minor)
     #   "26.0.3" or "25.6.3.7" (full version format)
 
@@ -37,8 +38,15 @@ if [ -n "$BC_VERSION" ]; then
 
     # Validate it's a number
     if [[ "$MAJOR" =~ ^[0-9]+$ ]]; then
-        echo "Detected BC version ${MAJOR}0 from BC_VERSION environment variable" >&2
-        echo "${MAJOR}0"
+        # Check if already in 3-digit format (e.g., 260, 250)
+        if [[ ${#MAJOR} -eq 3 ]]; then
+            echo "Detected BC version $MAJOR from BC_VERSION environment variable (already in 3-digit format)" >&2
+            echo "$MAJOR"
+        else
+            # Convert to 3-digit format by appending 0
+            echo "Detected BC version ${MAJOR}0 from BC_VERSION environment variable" >&2
+            echo "${MAJOR}0"
+        fi
         exit 0
     else
         echo "WARNING: Invalid BC_VERSION format: $BC_VERSION" >&2
