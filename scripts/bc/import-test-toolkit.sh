@@ -1,197 +1,43 @@
 #!/bin/bash
+# Wrapper script to install BC Test Toolkit apps
+# This delegates to the PowerShell script that uses the BC Management module
+
 # Don't exit on errors - we want to report them and continue
 set +e
+
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Use environment variables for configuration
+BC_INSTANCE="${BC_INSTANCE:-BC}"
+BC_TENANT="${BC_TENANT:-default}"
 
 echo ""
 echo "========================================="
 echo "INSTALLING BC TEST TOOLKIT"
 echo "========================================="
-
-# BC Server connection details
-BC_SERVER="localhost"
-BC_PORT="7049"
-BC_INSTANCE="BC"
-BC_TENANT="default"
-# Use environment variables or defaults
-BC_USERNAME="${ADMIN_USERNAME:-admin}"
-BC_PASSWORD="${ADMIN_PASSWORD:-Admin123!}"
-BC_BASE_URL="http://${BC_SERVER}:${BC_PORT}/${BC_INSTANCE}"
-
-echo "Using BC server: $BC_BASE_URL"
-echo "Tenant: $BC_TENANT"
-echo "Username: $BC_USERNAME"
+echo "Using PowerShell Management Module approach..."
 echo ""
 
-# NOTE: Credentials are passed via curl -u flag. This is acceptable for local
-# container environments but would expose credentials in process lists in production.
-# For production, consider using .netrc or other secure credential storage.
-
-# Function to get published apps using OData API
-# Requires Python 3.6+ for f-string support
-get_published_test_apps() {
-    local api_url="${BC_BASE_URL}/api/microsoft/automation/v2.0/companies(00000000-0000-0000-0000-000000000000)/extensions?\$filter=publisher eq 'Microsoft' and (contains(displayName,'Test') or contains(displayName,'Performance Toolkit'))"
-
-    curl -s -u "${BC_USERNAME}:${BC_PASSWORD}" "$api_url" | \
-        python3 -c "
-import sys, json
-try:
-    data = json.load(sys.stdin)
-    if 'value' in data:
-        for ext in data['value']:
-            print(f\"{ext['displayName']}|{ext['versionMajor']}.{ext['versionMinor']}.{ext['versionBuild']}.{ext['versionRevision']}\")
-except Exception as e:
-    print(f'Error parsing API response: {e}', file=sys.stderr)
-    sys.exit(1)
-"
-}
-
-# Function to install an extension using Automation API
-install_extension() {
-    local app_name="$1"
-    local app_version="$2"
-
-    echo "  Installing: $app_name $app_version"
-
-    # Use the extensionDeploymentStatus API to install
-    local api_url="${BC_BASE_URL}/api/microsoft/automation/v2.0/companies(00000000-0000-0000-0000-000000000000)/extensionDeploymentStatus"
-    local payload=$(cat <<EOF
-{
-    "name": "$app_name",
-    "publisher": "Microsoft",
-    "version": "$app_version",
-    "deploy": true
-}
-EOF
-)
-
-    local response=$(curl -s -w "\n%{http_code}" -u "${BC_USERNAME}:${BC_PASSWORD}" \
-        -H "Content-Type: application/json" \
-        -X POST \
-        -d "$payload" \
-        "$api_url" 2>&1)
-
-    local http_code=$(echo "$response" | tail -n 1)
-    local body=$(echo "$response" | sed '$d')
-
-    if [ "$http_code" = "201" ] || [ "$http_code" = "200" ]; then
-        echo "    ✓ Installation initiated successfully"
-        return 0
-    else
-        echo "    ✗ Failed (HTTP $http_code)"
-        echo "    Response: $body"
-        return 1
-    fi
-}
-
-echo "Discovering published test toolkit apps..."
-published_apps=$(get_published_test_apps)
-get_apps_exit_code=$?
-
-if [ $get_apps_exit_code -ne 0 ]; then
-    echo "⚠️  WARNING: Failed to get published test toolkit apps from BC server"
-    echo "This could be due to:"
-    echo "  - BC Server not fully ready yet"
-    echo "  - Authentication failure (check ADMIN_USERNAME/ADMIN_PASSWORD)"
-    echo "  - API not accessible"
-    echo "  - Test toolkit apps not published on the server"
-    echo ""
-    echo "Skipping test toolkit installation. BC Server will continue running."
-    echo "You can manually install test toolkit apps later if needed."
-    exit 0
-fi
-
-if [ -z "$published_apps" ]; then
-    echo "⚠️  WARNING: No test toolkit apps found published on the server"
-    echo "Test toolkit apps must be published before they can be installed."
-    echo ""
-    echo "This is normal if:"
-    echo "  - This is a fresh BC installation"
-    echo "  - Test toolkit apps haven't been published yet"
-    echo ""
+# Check if PowerShell is available
+if ! command -v pwsh &> /dev/null; then
+    echo "⚠️  WARNING: PowerShell (pwsh) not found"
+    echo "PowerShell is required to use the BC Management module"
     echo "Skipping test toolkit installation. BC Server will continue running."
     exit 0
 fi
 
-echo "Found published test toolkit apps:"
-while IFS='|' read -r name version; do
-    echo "  - $name ($version)"
-done < <(echo "$published_apps")
-echo ""
+# Run the PowerShell script
+pwsh -File "$SCRIPT_DIR/import-test-toolkit.ps1" \
+    -ServerInstance "$BC_INSTANCE" \
+    -Tenant "$BC_TENANT"
 
-# Define installation order based on dependencies
-installation_order=(
-    "Permissions Mock"
-    "Test Runner"
-    "Any"
-    "Library Assert"
-    "Library Variable Storage"
-    "System Application Test Library"
-    "Business Foundation Test Libraries"
-    "Application Test Library"
-    "Tests-TestLibraries"
-    "AI Test Toolkit"
-    "Performance Toolkit"
-)
+exit_code=$?
 
-installed_count=0
-failed_count=0
-skipped_count=0
-
-echo "Installing test toolkit apps in dependency order..."
-echo ""
-
-for pattern in "${installation_order[@]}"; do
-    # Find matching apps
-    matching_apps=$(echo "$published_apps" | grep -i "$pattern" || true)
-
-    if [ -z "$matching_apps" ]; then
-        continue
-    fi
-
-    while IFS='|' read -r name version; do
-        # Skip SINGLESERVER tests
-        if echo "$name" | grep -qi "SINGLESERVER"; then
-            echo "  Skipping: $name (SINGLESERVER test)"
-            skipped_count=$((skipped_count + 1))
-            continue
-        fi
-
-        if install_extension "$name" "$version"; then
-            installed_count=$((installed_count + 1))
-            # Wait a bit for installation to process
-            sleep 2
-        else
-            failed_count=$((failed_count + 1))
-        fi
-    done < <(echo "$matching_apps")
-done
-
-echo ""
-echo "========================================="
-echo "TEST TOOLKIT INSTALLATION SUMMARY"
-echo "========================================="
-echo "Attempted installations: $installed_count"
-echo "Failed: $failed_count"
-echo "Skipped: $skipped_count"
-echo ""
-
-if [ $installed_count -eq 0 ] && [ $failed_count -gt 0 ]; then
-    echo "⚠️  WARNING: No test toolkit apps were installed successfully"
-    echo "Some installations failed. Check the logs above for details."
+if [ $exit_code -ne 0 ]; then
+    echo ""
+    echo "⚠️  WARNING: PowerShell script exited with code $exit_code"
     echo "BC Server will continue running."
-    exit 0
-elif [ $installed_count -eq 0 ]; then
-    echo "⚠️  INFO: No test toolkit apps were installed"
-    echo "This could be because:"
-    echo "  - No matching test toolkit apps were found"
-    echo "  - All apps were skipped (e.g., SINGLESERVER tests)"
-    echo "BC Server will continue running."
-    exit 0
 fi
 
-echo "✓ Test toolkit installation completed!"
-echo "$installed_count app(s) installed successfully"
-if [ $failed_count -gt 0 ]; then
-    echo "⚠️  $failed_count app(s) failed to install"
-fi
 exit 0
